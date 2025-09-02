@@ -262,17 +262,10 @@ def render_validation_generator():
             # --- Generate Button ---
             if st.button("🚀 Generate Notebook", use_container_width=True, type="primary", disabled=st.session_state.rules_df.empty):
                 with st.spinner("Generating notebook... This may take a moment. 🧠"):
-                    # Define paths
+                    # Define path for local cache file only
                     project_root = Path(__file__).parent
                     output_dir = project_root / "output"
-                    # Use a more robust temporary file name
-                    temp_rules_path = output_dir / "temp_rules_for_generation.csv"
-                    output_notebook_path = output_dir / "adb_datavalidation.py"
                     cache_file_path = output_dir / "expression_cache.json"
-
-                    # Save the current state of rules to a temporary file
-                    output_dir.mkdir(parents=True, exist_ok=True)
-                    st.session_state.rules_df.to_csv(temp_rules_path, index=False)
 
                     # Initialize validator and generate
                     try:
@@ -281,15 +274,12 @@ def render_validation_generator():
                         if not api_key:
                             st.error("GEMINI_API_KEY not found in secrets. Please add it.")
                             st.stop()
-                        validator = DynamicValidator(api_key=api_key, cache_path=str(cache_file_path))
-                        summaries = validator.generate_databricks_notebook(
-                            rules_path=str(temp_rules_path),
-                            output_notebook_path=str(output_notebook_path)
-                        )
                         
-                        # Read the generated notebook content to store in session state for download
-                        with open(output_notebook_path, 'r', encoding='utf-8') as f:
-                            st.session_state.generated_notebook = f.read()
+                        validator = DynamicValidator(api_key=api_key, cache_path=str(cache_file_path))
+                        notebook_content, summaries = validator.generate_databricks_notebook(
+                            rules_df=st.session_state.rules_df
+                        )
+                        st.session_state.generated_notebook = notebook_content
 
                         # Store stats for the dashboard
                         st.session_state.generation_stats = {
@@ -302,10 +292,6 @@ def render_validation_generator():
                         st.error(f"An error occurred during generation: {e}")
                         st.session_state.generated_notebook = None # Clear on failure
                         st.session_state.generation_stats = None
-                    
-                    # Clean up temporary rules file
-                    if os.path.exists(temp_rules_path):
-                        os.remove(temp_rules_path)
 
         with col2:
             # --- Download Buttons ---
