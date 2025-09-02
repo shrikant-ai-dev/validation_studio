@@ -1,11 +1,11 @@
 import os
 import logging
 import pathlib
-import csv
 import re
 import json
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Tuple
 
+import pandas as pd
 import google.generativeai as genai
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql import functions as F
@@ -146,10 +146,22 @@ The expression must evaluate to `true` if the data is valid and `false` if it is
         
         try:
             response = self.model.generate_content(prompt)
-            expression = response.text.strip() # Keep backticks for safety with special characters
+            # Add a robust check to see if the model returned any content.
+            # An empty list of candidates usually means the response was blocked.
+            if not response.candidates:
+                feedback = response.prompt_feedback
+                block_reason = getattr(feedback, 'block_reason', 'Unknown')
+                error_message = f"Generation blocked by API. Reason: {block_reason}."
+                logging.warning(f"Generation failed for rule '{description}': {error_message}")
+                # Raise a specific error to be caught by the calling function.
+                raise ValueError(error_message)
+
+            expression = response.text.strip()
         except Exception as e:
-            logging.error(f"Error calling Generative AI API: {e}")
-            raise
+            # Catch the ValueError from above or any other API error.
+            logging.error(f"Error calling Generative AI API for rule '{description}': {e}")
+            # Re-raise the exception to be handled gracefully by the notebook generator.
+            raise e
 
         self._expression_cache[cache_key] = expression
         self._save_cache()
@@ -211,21 +223,6 @@ The expression must evaluate to `true` if the data is valid and `false` if it is
         return invalid_df.drop(*temp_cols)
 
     @staticmethod
-    def _read_rules_with_python(rules_path: str) -> List[Dict[str, Any]]:
-        """Reads rules from a CSV using Python's native csv module."""
-        try:
-            # Use utf-8-sig to handle potential BOM (Byte Order Mark) at the start of the file
-            with open(rules_path, mode='r', encoding='utf-8-sig') as csvfile:
-                reader = csv.DictReader(csvfile)
-                return [row for row in reader]
-        except FileNotFoundError:
-            logging.error(f"Rules file not found at: {rules_path}")
-            raise
-        except Exception as e:
-            logging.error(f"Error reading or parsing CSV file {rules_path}: {e}")
-            raise
-
-    @staticmethod
     def _generate_sample_data_code(rules: List[Dict[str, Any]]) -> (str, str):
         """Generates python code for sample columns and data based on rule definitions."""
         schema_from_rules = {}
@@ -278,25 +275,23 @@ The expression must evaluate to `true` if the data is valid and `false` if it is
         
         return notebook_columns_str, sample_data_str
 
-    def generate_databricks_notebook(self, rules_path: str, output_notebook_path: str):
+    def generate_databricks_notebook(self, rules_df: pd.DataFrame) -> Tuple[str, Dict[str, List[Dict[str, str]]]]:
         """
-        Generates a standalone Databricks notebook (.py) based on the validation rules.
-
-        This notebook can be imported into a Databricks workspace and run interactively.
+        Generates a standalone Databricks notebook string from a DataFrame of rules.
 
         Args:
-            rules_path (str): The path to the CSV file containing validation rules.
-            output_notebook_path (str): The path to save the generated .py notebook.
+            rules_df (pd.DataFrame): A DataFrame containing the validation rules.
+                                     Must have 'column_name', 'data_type', and 'rule' columns.
 
         Returns:
-            Dict[str, List[Dict[str, str]]]: A dictionary containing summaries for type checks and business rules.
+            Tuple[str, Dict]: A tuple containing:
+                - The generated notebook code as a string.
+                - A dictionary with summaries for type checks and business rules.
         """
-        logging.info(f"Generating Databricks notebook from rules at {rules_path}...")
-        try:
-            rules = self._read_rules_with_python(rules_path)
-        except Exception as e:
-            # Return an empty dict if rules cannot be read
-            return {}
+        logging.info(f"Generating Databricks notebook from {len(rules_df)} rules...")
+        if rules_df.empty:
+            return "", {}
+        rules = rules_df.to_dict('records')
 
         # Generate sample data code dynamically
         sample_columns_str, sample_data_str = self._generate_sample_data_code(rules)
@@ -340,7 +335,7 @@ validated_df = validated_df.withColumn(
             sanitized_rule = re.sub(r'[^a-zA-Z0-9_]', '_', rule['rule']).lower()[:30]
             validation_col_name = f"{sanitized_col}_{sanitized_rule}_{i}_ok"
 
-            generated_expression = "Error: Generation failed."
+            generated_expression = "Error: An unknown error occurred."
             try:
                 spark_expr = self._generate_spark_expression(
                     column_name=col_name,
@@ -361,8 +356,11 @@ validated_df = validated_df.withColumn( # Using original rule for comment is fin
                 validation_check_cols.append(validation_col_name)
 
             except Exception as e:
-                logging.error(f"Could not generate expression for rule: {rule['rule']}. Error: {e}")
-                validation_steps.append(f"\n# FAILED TO GENERATE RULE for column '{col_name}': {rule['rule']}\n")
+                # Use the specific error message from the exception for better feedback.
+                error_msg = str(e)
+                logging.error(f"Could not generate expression for rule: {rule['rule']}. Error: {error_msg}")
+                generated_expression = f"Error: {error_msg}"
+                validation_steps.append(f"\n# FAILED TO GENERATE RULE for column '{col_name}': {rule['rule']}\n# Error: {error_msg}\n")
             
             business_rule_summaries.append({
                 "Column Name": col_name,
@@ -382,7 +380,6 @@ validated_df = validated_df.withColumn( # Using original rule for comment is fin
 # MAGIC # Auto-Generated Data Quality Validation Notebook
 # MAGIC
 # MAGIC This notebook was generated by the DynamicValidator utility based on rules from:
-# MAGIC `{rules_path}`
 
 # COMMAND ----------
 
@@ -560,12 +557,9 @@ else:
     print("Write complete.")
     display(source_df.limit(10))
 """
-        output_path = pathlib.Path(output_notebook_path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(output_path, "w", encoding="utf-8") as f:
-            f.write(notebook_template)
-        logging.info(f"Successfully generated Databricks notebook at: {output_path}")
-        return {
+        summaries = {
             "type_checks": type_check_summaries,
             "business_rules": business_rule_summaries
         }
+        logging.info("Successfully generated Databricks notebook content in memory.")
+        return notebook_template, summaries
