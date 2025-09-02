@@ -29,6 +29,31 @@ def add_sidebar_logo():
         unsafe_allow_html=True,
     )
 
+def add_creator_details():
+    """Adds creator details to the sidebar."""
+    # LinkedIn SVG icon, color can be adjusted
+    linkedin_svg = """
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="#0077B5">
+        <path d="M19 0h-14c-2.761 0-5 2.239-5 5v14c0 2.761 2.239 5 5 5h14c2.762 0 5-2.239 5-5v-14c0-2.761-2.238-5-5-5zm-11 19h-3v-11h3v11zm-1.5-12.268c-.966 0-1.75-.79-1.75-1.764s.784-1.764 1.75-1.764 1.75.79 1.75 1.764-.783 1.764-1.75 1.764zm13.5 12.268h-3v-5.604c0-3.368-4-3.113-4 0v5.604h-3v-11h3v1.765c1.396-2.586 7-2.777 7 2.476v6.759z"/>
+    </svg>
+    """
+    b64_linkedin_svg = base64.b64encode(linkedin_svg.encode('utf-8')).decode('utf-8')
+
+    st.sidebar.divider()
+    st.sidebar.markdown(
+        f'''
+        <div style="text-align: center;">
+            <p style="margin-bottom: 5px; color: #888;">Created by</p>
+            <p style="font-weight: bold; font-size: 1.1em; margin-bottom: 10px;">Shrikant Warake</p>
+            <a href="http://linkedin.com/in/shrikant-warake" target="_blank" style="text-decoration: none; color: #0077B5; display: inline-flex; align-items: center; gap: 8px;">
+                <img src="data:image/svg+xml;base64,{b64_linkedin_svg}" alt="LinkedIn" width="20" height="20">
+                <span>Connect on LinkedIn</span>
+            </a>
+        </div>
+        ''',
+        unsafe_allow_html=True
+    )
+
 def set_page_background():
     """
     Adds a subtle, professional background pattern to the page.
@@ -514,6 +539,8 @@ def main():
         render_validation_generator()
     elif st.session_state.tool_selection == "Notebook Reviewer":
         render_notebook_reviewer()
+    
+    add_creator_details()
 
 if __name__ == "__main__": # This ensures the app runs only when the script is executed directly
     main()
